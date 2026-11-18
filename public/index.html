@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Đếm cua trong lỗ</title>
+  <meta name="description" content="Ngồi trên miệng hố, cua bò ra con nào đếm con đó. Ai đếm được nhiều nhất?">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦀</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Thanh trên cùng: tên game + điểm của bạn -->
+    <header class="hud">
+      <div class="brand">🦀 Đếm cua trong lỗ</div>
+      <div class="me">
+        <span id="me-name" class="me-name"></span>
+        <span><b id="me-score" class="score">0</b> con</span>
+        <span class="me-rank">hạng <b id="me-rank">–</b></span>
+      </div>
+      <button id="sound" class="icon-btn" type="button" aria-label="Bật/tắt âm thanh">🔊</button>
+    </header>
+
+    <!-- Cái hố: toàn bộ game được vẽ trong thẻ canvas này -->
+    <main class="stage">
+      <canvas id="pit" aria-label="Hố cua: bấm vào cua để đếm"></canvas>
+      <div id="status" class="status" hidden></div>
+    </main>
+
+    <!-- Bảng xếp hạng người đang online -->
+    <aside class="board">
+      <h2>Bảng xếp hạng</h2>
+      <p class="meta"><b id="online">0</b> người đang ngồi đếm · cả hố đã đếm <b id="total">0</b> lượt</p>
+      <ol id="top"></ol>
+      <p id="my-rank" class="my-rank" hidden></p>
+      <p class="hint">Mỗi con cua bạn chỉ đếm được 1 lần, nhưng người khác vẫn đếm được con đó. Cua nhỏ bò nhanh hơn đấy!</p>
+    </aside>
+  </div>
+
+  <!-- Màn hình nhập biệt danh -->
+  <div id="join" class="overlay">
+    <form id="join-form" class="card">
+      <div class="big-crab" aria-hidden="true">🦀</div>
+      <h1>Đếm cua trong lỗ</h1>
+      <p class="lead">Bạn ngồi trên miệng hố. Cua bò ra con nào, bấm đếm con đó. Ai đếm được nhiều nhất?</p>
+      <input id="name" name="name" maxlength="16" placeholder="Biệt danh của bạn" autocomplete="off" required>
+      <button id="join-btn" type="submit">Ngồi xuống đếm cua</button>
+      <p id="join-error" class="error" role="alert"></p>
+      <ul class="rules">
+        <li>Bấm chuột (hoặc chạm) trúng con cua: +1</li>
+        <li>Mỗi con bạn chỉ được đếm 1 lần</li>
+        <li>Rời game là rời bảng xếp hạng</li>
+      </ul>
+    </form>
+  </div>
+
+  <script src="game.js" defer></script>
+</body>
+</html>
