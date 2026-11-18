@@ -21,6 +21,7 @@ const S = {
   effects: [],             // chữ "+1" bay lên, vòng tròn khi bấm trượt...
   seats: [],               // 3 người điểm cao nhất (không tính bạn) ngồi ở 3 góc còn lại
   flash: new Map(),        // id người chơi -> lúc họ vừa đếm trúng (để nháy +1)
+  bubbles: new Map(),      // id người chơi -> bong bóng chat đang hiện trên hố
   timeSamples: [],         // để đồng bộ đồng hồ với server
   offset: 0,               // giờ server = Date.now() + offset
   muted: store('crab-muted') === '1',
@@ -111,6 +112,7 @@ function handleMessage(m) {
       S.score = m.me.score;
       resize();
       updateHud();
+      renderChatHistory(m.chat || []);
       break;
     case 'crab':
       addCrab(m.crab);
@@ -133,6 +135,10 @@ function handleMessage(m) {
     }
     case 'board':
       renderBoard(m);
+      break;
+    case 'chat':
+      addChatLine(m.msg);
+      showBubble(m.msg);
       break;
     case 'rejoin':
       rejoin();
@@ -685,6 +691,7 @@ function frame(t) {
   }
   for (const c of S.crabs.values()) if (c.pose) drawBadge(c, c.pose);
   seats.forEach((s, i) => drawSeatLabel(s, i, pt)); // nhãn tên + điểm ở 4 góc
+  seats.forEach((s, i) => drawBubble(s, i, pt));    // bong bóng chat của người ngồi quanh hố
   drawEffects();
   requestAnimationFrame(frame);
 }
@@ -811,6 +818,167 @@ function setStatus(text) {
 }
 
 // ============================================================
+// 6b. CHAT
+// ============================================================
+// Khung chat được tạo bằng JavaScript (không cần sửa index.html):
+// máy tính nằm dưới bảng xếp hạng, điện thoại nằm ngay dưới hố (xem style.css).
+function buildChatBox() {
+  const box = document.createElement('section');
+  box.className = 'chat';
+  box.innerHTML =
+    '<h2>Trò chuyện</h2>' +
+    '<ol id="chat-list" class="chat-list" aria-live="polite"></ol>' +
+    '<form id="chat-form" class="chat-form" autocomplete="off">' +
+    '  <input id="chat-input" maxlength="120" placeholder="Nhắn gì đó cho cả hố…" aria-label="Tin nhắn">' +
+    '  <button type="submit">Gửi</button>' +
+    '</form>' +
+    '<p id="chat-note" class="chat-note" role="status"></p>';
+  $('app').append(box);
+  $('chat-form').addEventListener('submit', sendChat);
+}
+
+function renderChatHistory(list) {
+  const ol = $('chat-list');
+  ol.replaceChildren();
+  if (!list.length) {
+    const li = document.createElement('li');
+    li.className = 'chat-empty';
+    li.textContent = 'Chưa có tin nhắn nào. Chào cả hố một câu đi!';
+    ol.append(li);
+  }
+  list.forEach((msg) => addChatLine(msg));
+  ol.scrollTop = ol.scrollHeight;
+}
+
+// Thêm 1 dòng chat. Dùng textContent nên tin nhắn có ký tự lạ cũng không phá được trang.
+function addChatLine(msg) {
+  const ol = $('chat-list');
+  ol.querySelector('.chat-empty')?.remove();
+  const nearBottom = ol.scrollHeight - ol.scrollTop - ol.clientHeight < 40;
+  const mine = msg.by === S.id;
+
+  const li = document.createElement('li');
+  if (mine) li.className = 'mine';
+  const time = document.createElement('span');
+  time.className = 'chat-time';
+  time.textContent = new Date(msg.at).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+  const name = document.createElement('b');
+  name.className = 'chat-name';
+  name.textContent = mine ? 'Bạn' : msg.name;
+  name.style.color = shade(lookFor(msg.by).shirt, 0.45);   // cùng màu áo người đó ngồi quanh hố
+  const text = document.createElement('span');
+  text.className = 'chat-text';
+  text.textContent = msg.text;
+  li.append(time, name, text);
+  ol.append(li);
+
+  while (ol.children.length > 100) ol.firstChild.remove();
+  if (nearBottom || mine) ol.scrollTop = ol.scrollHeight;
+}
+
+async function sendChat(e) {
+  e.preventDefault();
+  const input = $('chat-input');
+  const text = input.value.trim();
+  if (!text || !S.joined) return;
+  input.value = '';
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: S.token, text }),
+    });
+    if (res.status === 401) return rejoin();
+    if (res.status === 429) {
+      input.value = text;
+      chatNote('Gửi chậm thôi, mỗi giây 1 tin nhé!');
+    }
+  } catch {
+    input.value = text;
+    chatNote('Chưa gửi được, bạn thử lại nhé.');
+  }
+}
+
+let chatNoteTimer = 0;
+function chatNote(text) {
+  $('chat-note').textContent = text;
+  clearTimeout(chatNoteTimer);
+  chatNoteTimer = setTimeout(() => { $('chat-note').textContent = ''; }, 2500);
+}
+
+// Người nhắn đang ngồi quanh hố (kể cả bạn) -> hiện bong bóng lời nói vài giây
+function showBubble(msg) {
+  if (!seatList().some((s) => s.id === msg.by)) return;
+  const len = Array.from(msg.text).length;
+  S.bubbles.set(msg.by, { text: msg.text, born: performance.now(), life: Math.min(8000, 3500 + 60 * len) });
+}
+
+function drawBubble(seat, i, t) {
+  const b = S.bubbles.get(seat.id);
+  if (!b) return;
+  const age = t - b.born;
+  if (age > b.life) { S.bubbles.delete(seat.id); return; }
+
+  const g = ctx, W = S.world.size, { sx } = CORNERS[i], s = seatSpot(i);
+  const fs = Math.max(18, 12 / cssPerUnit);
+  const pad = fs * 0.6, lh = fs * 1.3;
+  const maxW = Math.min(470, Math.max(330, fs * 14));
+  g.font = `600 ${fs}px system-ui, sans-serif`;
+  const lines = wrapText(g, b.text, maxW - pad * 2, 3);
+  const w = Math.max(...lines.map((l) => g.measureText(l).width)) + pad * 2;
+  const h = lines.length * lh + pad * 1.2;
+  // bong bóng nằm bên cạnh người ngồi, phía trong hố, không tràn ra ngoài khung
+  const x0 = sx < 0 ? s.x + 72 : s.x - 72 - w;
+  const y0 = Math.min(Math.max(s.y - h / 2, 60), W - 60 - h);
+  const cy = Math.min(Math.max(s.y, y0 + h * 0.3), y0 + h * 0.7);
+
+  g.save();
+  g.globalAlpha = Math.min(1, age / 150, (b.life - age) / 400);
+  g.fillStyle = seat.me ? '#fff4d1' : '#ffffff';
+  g.strokeStyle = 'rgba(0,0,0,0.25)';
+  g.lineWidth = 2;
+  g.beginPath();                                   // đuôi bong bóng chỉ về phía người nói
+  const edge = sx < 0 ? x0 : x0 + w;
+  g.moveTo(edge, cy - fs * 0.45);
+  g.lineTo(s.x - sx * 34, s.y);
+  g.lineTo(edge, cy + fs * 0.45);
+  g.closePath(); g.fill(); g.stroke();
+  roundRect(g, x0, y0, w, h, fs * 0.6); g.fill(); g.stroke();
+  g.fillRect(edge - (sx < 0 ? 0 : 3), cy - fs * 0.45 + 2, 3, fs * 0.9 - 4); // che đường viền chỗ nối đuôi
+  g.fillStyle = '#1d2b30';
+  g.textAlign = 'left'; g.textBaseline = 'middle';
+  lines.forEach((line, k) => g.fillText(line, x0 + pad, y0 + pad * 0.6 + lh * (k + 0.5)));
+  g.restore();
+}
+
+// Ngắt chữ thành nhiều dòng vừa chiều rộng; quá số dòng thì thêm "…"
+function wrapText(g, text, maxWidth, maxLines) {
+  const words = text.split(' ');
+  const lines = [];
+  let line = '';
+  for (let word of words) {
+    while (g.measureText(word).width > maxWidth) {   // từ quá dài: cắt bớt từng ký tự
+      let cut = Array.from(word);
+      while (cut.length > 1 && g.measureText(cut.join('')).width > maxWidth) cut.pop();
+      if (line) { lines.push(line); line = ''; }
+      lines.push(cut.join(''));
+      word = Array.from(word).slice(cut.length).join('');
+    }
+    const test = line ? line + ' ' + word : word;
+    if (g.measureText(test).width > maxWidth && line) { lines.push(line); line = word; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  if (lines.length > maxLines) {
+    lines.length = maxLines;
+    let last = lines[maxLines - 1];
+    while (last && g.measureText(last + '…').width > maxWidth) last = Array.from(last).slice(0, -1).join('');
+    lines[maxLines - 1] = last + '…';
+  }
+  return lines;
+}
+
+// ============================================================
 // 7. ÂM THANH (tự tạo bằng Web Audio, không cần file mp3)
 // ============================================================
 let audio = null;
@@ -862,6 +1030,7 @@ $('join-form').addEventListener('submit', (e) => {
   join($('name').value);
 });
 updateSoundButton();
+buildChatBox();
 new ResizeObserver(resize).observe(canvas.parentElement);
 resize();
 requestAnimationFrame(frame);

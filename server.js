@@ -51,6 +51,12 @@ const CONFIG = {
   TOP_N: 10,               // số người hiện trên bảng xếp hạng
   SEATS: 3,                // số người khác được vẽ ngồi quanh hố (3 góc còn lại)
   MAX_PLAYERS: 500,        // giới hạn số người cùng lúc
+
+  CHAT_MAX_LEN: 120,       // độ dài tối đa của 1 tin nhắn chat (ký tự)
+  CHAT_HISTORY: 30,        // người mới vào thấy bao nhiêu tin gần nhất
+  CHAT_MIN_GAP_MS: 1000,   // mỗi người gửi tối đa 1 tin mỗi giây (chống spam)
+
+  KEEP_AWAKE_MIN: 10,      // trên Render gói Free: cứ 10 phút tự gọi chính mình để không bị "ngủ" (0 = tắt)
 };
 
 const CRAB_COLORS = [
@@ -84,6 +90,8 @@ let crabSeq = 0;                    // bộ đếm để đặt id cho cua
 let lastSpawn = 0;
 let totalCount = 0;                 // tổng số lượt đếm của cả hố
 let boardDirty = false;             // có thay đổi điểm cần gửi lại bảng xếp hạng không
+const chatLog = [];                 // các tin chat gần nhất (chỉ trong bộ nhớ)
+let chatSeq = 0;
 
 // Đặt các lỗ cua ngẫu nhiên dưới đáy hố, không cho lỗ nào nằm quá sát lỗ nào.
 // Nếu nhiều lỗ quá không đủ chỗ, khoảng cách tối thiểu sẽ tự nới nhỏ dần.
@@ -276,6 +284,7 @@ function handleEvents(req, res, url) {
     holes,
     crabs: [...crabs.values()].filter((c) => now < c.t0 + c.dur).map((c) => publicCrab(c, p)),
     me: { id: p.id, name: p.name, score: p.score },
+    chat: chatLog,
   });
   boardDirty = true;
 
@@ -314,6 +323,34 @@ async function handleClick(req, res) {
   boardDirty = true;
   broadcast({ type: 'count', crab: c.id, by: p.id, name: p.name, score: p.score, n: c.countedBy.size });
   sendJson(res, 200, { ok: true, score: p.score });
+}
+
+// POST /api/chat  { token, text }  -> gửi 1 tin nhắn cho mọi người đang chơi
+async function handleChat(req, res) {
+  const body = await readJson(req);
+  const p = players.get(body.token);
+  if (!p) return sendJson(res, 401, { ok: false, reason: 'rejoin' });
+
+  const text = cleanChat(body.text);
+  if (!text) return sendJson(res, 400, { ok: false, reason: 'empty' });
+  const now = Date.now();
+  if (now - (p.lastChat || 0) < CONFIG.CHAT_MIN_GAP_MS) {
+    return sendJson(res, 429, { ok: false, reason: 'slow' });
+  }
+
+  p.lastChat = now;
+  const msg = { id: ++chatSeq, by: p.id, name: p.name, text, at: now };
+  chatLog.push(msg);
+  if (chatLog.length > CONFIG.CHAT_HISTORY) chatLog.shift();
+  broadcast({ type: 'chat', msg });
+  sendJson(res, 200, { ok: true });
+}
+
+// Làm sạch tin nhắn: bỏ ký tự điều khiển (kể cả xuống dòng), gộp khoảng trắng, cắt độ dài.
+// Trình duyệt hiển thị tin bằng textContent nên không ai chèn được mã độc vào trang.
+function cleanChat(raw) {
+  const s = String(raw || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return Array.from(s).slice(0, CONFIG.CHAT_MAX_LEN).join('');
 }
 
 // ============================================================
@@ -429,6 +466,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'POST' && url.pathname === '/api/join') return await handleJoin(req, res);
     if (req.method === 'POST' && url.pathname === '/api/click') return await handleClick(req, res);
+    if (req.method === 'POST' && url.pathname === '/api/chat') return await handleChat(req, res);
     if (req.method === 'GET' && url.pathname === '/api/events') return handleEvents(req, res, url);
     if (req.method === 'GET' && url.pathname === '/healthz') {
       return sendJson(res, 200, { ok: true, online: onlinePlayers().length, crabs: crabs.size });
@@ -453,3 +491,21 @@ server.listen(CONFIG.PORT, () => {
   }
   console.log('   Nhấn Ctrl + C để tắt server.');
 });
+
+// ============================================================
+// 10. TỰ ĐÁNH THỨC TRÊN RENDER GÓI FREE
+// ============================================================
+// Render gói Free cho server "ngủ" nếu 15 phút không có ai truy cập.
+// Cứ KEEP_AWAKE_MIN phút, server gọi địa chỉ công khai của chính nó (/healthz),
+// lời gọi này đi qua Internet nên Render tính là có người truy cập => không ngủ.
+// Render tự đặt biến RENDER_EXTERNAL_URL (ví dụ https://dem-cua.onrender.com);
+// chạy trên máy bạn thì không có biến này nên đoạn dưới không làm gì.
+const SELF_URL = process.env.RENDER_EXTERNAL_URL;
+if (SELF_URL && CONFIG.KEEP_AWAKE_MIN > 0) {
+  console.log(`   Tự đánh thức: gọi ${SELF_URL}/healthz mỗi ${CONFIG.KEEP_AWAKE_MIN} phút.`);
+  setInterval(() => {
+    fetch(SELF_URL + '/healthz')
+      .then((r) => console.log(`[tự đánh thức] ${new Date().toISOString()} -> ${r.status}`))
+      .catch((err) => console.log('[tự đánh thức] lỗi:', err.message));
+  }, CONFIG.KEEP_AWAKE_MIN * 60 * 1000);
+}
